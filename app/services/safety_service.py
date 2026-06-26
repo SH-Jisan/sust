@@ -10,15 +10,16 @@ class SafetyService:
             return ""
 
         # 1. Credentials Requests Checks (PIN/OTP/passwords/cards)
-        # Avoid matching warning phrases like "do not share PIN" by using negative lookbehinds
+        # We separate 'share' to apply negative lookbehinds, preventing false positives on disclaimers.
+        # [^\.]*? prevents matching across sentence boundaries.
         unsafe_creds = [
             r"share your otp", r"provide otp", r"send otp", r"share pin", r"provide pin",
             r"password", r"full card number", r"verification code", r"secret credential",
             r"ওটিপি দিন", r"পিন দিন", r"পাসওয়ার্ড দিন", r"ওটিপি চান", r"পিন বলুন",
             r"ওটিপি শেয়ার করুন", r"পিন শেয়ার করুন",
-            r"\b(?:ask|provide|tell|send|enter|input|give)\b.*\b(?:pin|otp|password|passcode|card number)\b",
-            r"(?<!not )(?<!never )share.*(?:pin|otp)",
-            r"\b(?:পিন|ওটিপি|পাসওয়ার্ড|কার্ড নম্বর)\b.*\b(?:দিন|বলুন|পাঠান|শেয়ার করুন|চাই)\b"
+            r"\b(?:ask|provide|tell|send|enter|input|give)\b[^\.]*?\b(?:pin|otp|password|passcode|card number)\b",
+            r"(?<!not )(?<!never )share[^\.]*?(?:pin|otp)",
+            r"\b(?:পিন|ওটিপি|পাসওয়ার্ড|কার্ড নম্বর)\b[^।]*?\b(?:দিন|বলুন|পাঠান|চাই)\b"
         ]
         
         has_cred_violation = False
@@ -40,8 +41,8 @@ class SafetyService:
             unsafe_promises = [
                 r"we will refund", r"refund confirmed", r"reversal confirmed", r"we will reverse",
                 r"account unblocked", r"money recovered", r"টাকা ফেরত দেওয়া হবে নিশ্চিত", r"রিফান্ড নিশ্চিত",
-                r"\bwe\b.*\b(?:refund|reverse|unblock|recover|credit)\b",
-                r"\b(?:refund|reversal|unblock|recovery)\b.*\b(?:will be|is|has been|confirmed|initiated|completed)\b",
+                r"\bwe\b[^\.]*?\b(?:refund|reverse|unblock|recover|credit)\b",
+                r"\b(?:refund|reversal|unblock|recovery)\b[^\.]*?\b(?:will be|is|has been|confirmed|initiated|completed)\b",
                 r"\bwill refund you\b",
                 r"\bwill reverse the\b",
                 r"টাকা ফেরত (?:দেওয়া হবে|দিচ্ছি|দেবো)",
@@ -70,7 +71,7 @@ class SafetyService:
                     r"https?://(?!bkash\.com|queuestorm\.com)\S+",
                     r"t\.me/\S+",
                     r"bit\.ly/\S+",
-                    r"\bcontact.*(?:unofficial|third-party|support-desk|external-agent)\b"
+                    r"\bcontact[^\.]*?(?:unofficial|third-party|support-desk|external-agent)\b"
                 ]
                 
                 has_third_party_violation = False
@@ -107,8 +108,8 @@ class SafetyService:
             return ""
             
         unsafe_directives = [
-            r"\b(?:refund|reverse|unblock)\b.*\b(?:now|immediately|confirm|promise)\b",
-            r"\b(?:initiate|process|complete)\b.*\b(?:refund|reversal)\b",
+            r"\b(?:refund|reverse|unblock)\b[^\.]*?\b(?:now|immediately|confirm|promise)\b",
+            r"\b(?:initiate|process|complete)\b[^\.]*?\b(?:refund|reversal)\b",
             r"refund confirmed", r"reversal confirmed"
         ]
         
