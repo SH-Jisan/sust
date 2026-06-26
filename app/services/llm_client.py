@@ -12,32 +12,41 @@ class LLMClientService:
         verdict: EvidenceVerdict,
         relevant_txn_id: Optional[str],
         user_type: Optional[str],
-        is_bangla: bool = False
+        is_bangla: bool = False,
+        matched_transaction: Optional[Any] = None,
+        extracted_facts: Optional[Dict[str, Any]] = None,
+        ambiguity_reason: Optional[str] = None
     ) -> Tuple[str, str, str]:
         """
         Generates agent_summary, recommended_next_action, and customer_reply.
-        Tries to call LLM APIs (Gemini/OpenAI) if keys are configured.
-        Otherwise falls back to high-quality template-based generation.
+        Integrates all extracted runtime facts and matching contexts.
         """
         user_type_str = user_type or "customer"
         
-        # 1. Check if LLM API Keys are present and call them
+        # 1. Call LLM APIs if keys are available
         if settings.LLM_PROVIDER == "gemini" and settings.GEMINI_API_KEY:
             try:
-                return await LLMClientService._call_gemini_api(complaint, case_type, verdict, relevant_txn_id, user_type_str, is_bangla)
+                return await LLMClientService._call_gemini_api(
+                    complaint, case_type, verdict, relevant_txn_id, user_type_str, is_bangla,
+                    matched_transaction, extracted_facts, ambiguity_reason
+                )
             except Exception:
-                # Fallback on failure
                 pass
                 
         elif settings.LLM_PROVIDER == "openai" and settings.OPENAI_API_KEY:
             try:
-                return await LLMClientService._call_openai_api(complaint, case_type, verdict, relevant_txn_id, user_type_str, is_bangla)
+                return await LLMClientService._call_openai_api(
+                    complaint, case_type, verdict, relevant_txn_id, user_type_str, is_bangla,
+                    matched_transaction, extracted_facts, ambiguity_reason
+                )
             except Exception:
-                # Fallback on failure
                 pass
                 
-        # 2. Fallback Rule-Based Templates (Matches Sample Cases Pack)
-        return LLMClientService._generate_fallback_templates(complaint, case_type, verdict, relevant_txn_id, user_type_str, is_bangla)
+        # 2. Local Fallback Templates (Bilingual & Context-Aware)
+        return LLMClientService._generate_fallback_templates(
+            complaint, case_type, verdict, relevant_txn_id, user_type_str, is_bangla,
+            matched_transaction, extracted_facts, ambiguity_reason
+        )
 
     @staticmethod
     async def _call_gemini_api(
@@ -46,12 +55,17 @@ class LLMClientService:
         verdict: EvidenceVerdict,
         relevant_txn_id: Optional[str],
         user_type: str,
-        is_bangla: bool
+        is_bangla: bool,
+        matched_transaction: Optional[Any],
+        extracted_facts: Optional[Dict[str, Any]],
+        ambiguity_reason: Optional[str]
     ) -> Tuple[str, str, str]:
-        """Calls Google Gemini API asynchronously using httpx."""
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.MODEL_NAME}:generateContent?key={settings.GEMINI_API_KEY}"
         
-        system_prompt = LLMClientService._get_system_prompt(case_type, verdict, relevant_txn_id, user_type, is_bangla)
+        system_prompt = LLMClientService._get_system_prompt(
+            case_type, verdict, relevant_txn_id, user_type, is_bangla,
+            matched_transaction, extracted_facts, ambiguity_reason
+        )
         
         payload = {
             "contents": [{
@@ -82,16 +96,21 @@ class LLMClientService:
         verdict: EvidenceVerdict,
         relevant_txn_id: Optional[str],
         user_type: str,
-        is_bangla: bool
+        is_bangla: bool,
+        matched_transaction: Optional[Any],
+        extracted_facts: Optional[Dict[str, Any]],
+        ambiguity_reason: Optional[str]
     ) -> Tuple[str, str, str]:
-        """Calls OpenAI Chat Completion API asynchronously using httpx."""
         url = "https://api.openai.com/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
             "Content-Type": "application/json"
         }
         
-        system_prompt = LLMClientService._get_system_prompt(case_type, verdict, relevant_txn_id, user_type, is_bangla)
+        system_prompt = LLMClientService._get_system_prompt(
+            case_type, verdict, relevant_txn_id, user_type, is_bangla,
+            matched_transaction, extracted_facts, ambiguity_reason
+        )
         
         payload = {
             "model": settings.MODEL_NAME,
@@ -118,14 +137,26 @@ class LLMClientService:
         verdict: EvidenceVerdict,
         relevant_txn_id: Optional[str],
         user_type: str,
-        is_bangla: bool
+        is_bangla: bool,
+        matched_transaction: Optional[Any],
+        extracted_facts: Optional[Dict[str, Any]],
+        ambiguity_reason: Optional[str]
     ) -> str:
-        """Constructs a strict system prompt instructing the LLM on safety and outputs."""
         lang_instruction = (
             "If is_bangla is true, the customer_reply field MUST be in Bangla. "
             "Otherwise, it must be in English. Note: agent_summary and recommended_next_action "
             "MUST ALWAYS be in English."
         ) if is_bangla else "All response fields must be in English."
+
+        txn_details = ""
+        if matched_transaction:
+            txn_details = (
+                f"- Matched Transaction ID: {matched_transaction.transaction_id}\n"
+                f"- Matched Amount: {matched_transaction.amount}\n"
+                f"- Matched Counterparty: {matched_transaction.counterparty}\n"
+                f"- Matched Status: {matched_transaction.status}\n"
+                f"- Matched Type: {matched_transaction.type}\n"
+            )
 
         return f"""
         You are a SupportOps analyst copilot for a digital finance company.
@@ -140,6 +171,8 @@ class LLMClientService:
         - Relevant Transaction ID: {relevant_txn_id}
         - User Type: {user_type}
         - Language: {"Bangla" if is_bangla else "English"}
+        - Ambiguity Reason: {ambiguity_reason or "None"}
+        {txn_details}
 
         Rules:
         - {lang_instruction}
@@ -163,9 +196,11 @@ class LLMClientService:
         verdict: EvidenceVerdict,
         relevant_txn_id: Optional[str],
         user_type: str,
-        is_bangla: bool
+        is_bangla: bool,
+        matched_transaction: Optional[Any] = None,
+        extracted_facts: Optional[Dict[str, Any]] = None,
+        ambiguity_reason: Optional[str] = None
     ) -> Tuple[str, str, str]:
-        """Provides high-quality fallback text matching the sample case packs."""
         txn_str = relevant_txn_id or "the transaction"
         
         # English templates
@@ -175,10 +210,14 @@ class LLMClientService:
                     summary = f"Customer reports sending money via {txn_str} to a wrong recipient who is now unresponsive."
                     action = f"Verify {txn_str} details with the customer and initiate the wrong-transfer dispute workflow per policy."
                     reply = f"We have noted your concern about transaction {txn_str}. Please do not share your PIN or OTP with anyone. Our dispute team will review the case and contact you through official support channels."
-                else: # inconsistent
+                elif verdict == EvidenceVerdict.INCONSISTENT:
                     summary = f"Customer claims {txn_str} was a wrong transfer, but transaction history shows prior transfers to the same counterparty, suggesting an established recipient."
                     action = f"Flag for human review. Verify with the customer whether this was genuinely a wrong transfer given the established pattern."
                     reply = f"We have received your request regarding transaction {txn_str}. Please do not share your PIN or OTP with anyone. Our dispute team will review the case carefully and contact you through official support channels."
+                else: # insufficient_data (ambiguous match)
+                    summary = "Customer reports a wrong transfer dispute, but multiple plausible matching transactions exist in history."
+                    action = "Request recipient phone number or transaction ID from customer to resolve ambiguity."
+                    reply = "Thank you for reaching out. We see multiple transactions matching that amount. Could you please share the recipient number or transaction ID so we can identify the correct transaction? Please do not share your PIN or OTP with anyone."
                     
             elif case_type == CaseType.PAYMENT_FAILED:
                 summary = f"Customer reports deduction of balance for a failed payment transaction {txn_str}."
@@ -206,23 +245,30 @@ class LLMClientService:
                 reply = "Thank you for reaching out before sharing any information. We never ask for your PIN, OTP, or password under any circumstances. Please do not share these with anyone, even if they claim to be from us. Our fraud team has been notified."
                 
             else: # other / vague
-                summary = "Customer reports a concern about their money without specifying transaction details."
-                action = "Reply to customer asking for specific details: transaction ID, amount, and time."
-                reply = "Thank you for reaching out. To help you faster, please share the transaction ID, the amount involved, and a short description of what went wrong. Please do not share your PIN or OTP with anyone."
+                if ambiguity_reason == "multiple_plausible_matches":
+                    summary = "Customer reports a transfer dispute, but multiple plausible matching transactions exist in history."
+                    action = "Request recipient phone number or transaction ID from customer to resolve ambiguity."
+                    reply = "Thank you for reaching out. We see multiple transactions matching that amount. Could you please share the recipient number or transaction ID so we can help you? Please do not share your PIN or OTP with anyone."
+                else:
+                    summary = "Customer reports a concern about their money without specifying transaction details."
+                    action = "Reply to customer asking for specific details: transaction ID, amount, and time."
+                    reply = "Thank you for reaching out. To help you faster, please share the transaction ID, the amount involved, and a short description of what went wrong. Please do not share your PIN or OTP with anyone."
                 
         # Bangla templates
         else:
-            # We keep internal agent notes (summary, action) in English as standard practice, 
-            # and output the customer reply in Bangla.
             if case_type == CaseType.WRONG_TRANSFER:
                 if verdict == EvidenceVerdict.CONSISTENT:
                     summary = f"Customer reports sending money via {txn_str} to a wrong recipient who is now unresponsive."
                     action = f"Verify {txn_str} details with the customer and initiate the wrong-transfer dispute workflow per policy."
                     reply = f"আমরা আপনার লেনদেন {txn_str} সংক্রান্ত সমস্যাটি নথিভুক্ত করেছি। অনুগ্রহ করে কারো সাথে আপনার পিন বা ওটিপি শেয়ার করবেন না। আমাদের বিরোধ নিষ্পত্তি দল কেসটি পর্যালোচনা করবে এবং অফিশিয়াল চ্যানেলে আপনার সাথে যোগাযোগ করবে।"
-                else:
+                elif verdict == EvidenceVerdict.INCONSISTENT:
                     summary = f"Customer claims {txn_str} was a wrong transfer, but transaction history shows prior transfers to the same counterparty, suggesting an established recipient."
                     action = f"Flag for human review. Verify with the customer whether this was genuinely a wrong transfer given the established pattern."
                     reply = f"আমরা লেনদেন {txn_str} সংক্রান্ত আপনার অনুরোধটি পেয়েছি। অনুগ্রহ করে কারো সাথে আপনার পিন বা ওটিপি শেয়ার করবেন না। আমাদের বিরোধ নিষ্পত্তি দল কেসটি সতর্কতার সাথে পর্যালোচনা করবে এবং অফিশিয়াল চ্যানেলে আপনার সাথে যোগাযোগ করবে।"
+                else: # insufficient_data (ambiguous match)
+                    summary = "Customer reports a wrong transfer dispute, but multiple plausible matching transactions exist in history."
+                    action = "Request recipient phone number or transaction ID from customer to resolve ambiguity."
+                    reply = "ধন্যবাদ আমাদের সাথে যোগাযোগ করার জন্য। আমরা সেই পরিমাণের একাধিক লেনদেন দেখতে পাচ্ছি। অনুগ্রহ করে লেনদেনের নম্বরটি অথবা প্রাপক নম্বরটি শেয়ার করবেন কি? অনুগ্রহ করে কারো সাথে আপনার পিন বা ওটিপি শেয়ার করবেন না।"
                     
             elif case_type == CaseType.PAYMENT_FAILED:
                 summary = f"Customer reports deduction of balance for a failed payment transaction {txn_str}."
@@ -255,8 +301,13 @@ class LLMClientService:
                 reply = "কোনো তথ্য শেয়ার করার আগে আমাদের সাথে যোগাযোগ করার জন্য ধন্যবাদ। আমরা কোনো অবস্থাতেই আপনার পিন, ওটিপি বা পাসওয়ার্ড চাই না। এমনকি কেউ আমাদের পরিচয় দিলেও দয়া করে এগুলো শেয়ার করবেন না। আমাদের জালিয়াতি প্রতিরোধ দলকে বিষয়টি জানানো হয়েছে।"
                 
             else: # other / vague
-                summary = "Customer reports a concern about their money without specifying transaction details."
-                action = "Reply to customer asking for specific details: transaction ID, amount, and time."
-                reply = "আমাদের সাথে যোগাযোগ করার জন্য ধন্যবাদ। আপনাকে দ্রুত সাহায্য করতে দয়া করে লেনদেন আইডি, টাকার পরিমাণ এবং কী সমস্যা হয়েছিল তা সংক্ষেপে শেয়ার করুন। অনুগ্রহ করে কারো সাথে আপনার পিন বা ওটিপি শেয়ার করবেন না।"
+                if ambiguity_reason == "multiple_plausible_matches":
+                    summary = "Customer reports a transfer dispute, but multiple plausible matching transactions exist in history."
+                    action = "Request recipient phone number or transaction ID from customer to resolve ambiguity."
+                    reply = "ধন্যবাদ যোগাযোগ করার জন্য। আমরা সেই পরিমাণের একাধিক লেনদেন দেখতে পাচ্ছি। অনুগ্রহ করে লেনদেনের নম্বরটি শেয়ার করবেন কি? অনুগ্রহ করে কারো সাথে আপনার পিন বা ওটিপি শেয়ার করবেন না।"
+                else:
+                    summary = "Customer reports a concern about their money without specifying transaction details."
+                    action = "Reply to customer asking for specific details: transaction ID, amount, and time."
+                    reply = "আমাদের সাথে যোগাযোগ করার জন্য ধন্যবাদ। আপনাকে দ্রুত সাহায্য করতে দয়া করে লেনদেন আইডি, টাকার পরিমাণ এবং কী সমস্যা হয়েছিল তা সংক্ষেপে শেয়ার করুন। অনুগ্রহ করে কারো সাথে আপনার পিন বা ওটিপি শেয়ার করবেন না।"
 
         return summary, action, reply
